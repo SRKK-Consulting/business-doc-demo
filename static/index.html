@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Business Report Chatbot</title>
+    <script src="https://cdn.jsdelivr.net/npm/react@18.3.1/umd/react.production.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@babel/standalone@7.25.6/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            height: 100vh;
+            background: url('https://www.transparenttextures.com/patterns/stardust.png') #1a1a2e;
+            color: #e0e0e0;
+            font-family: 'Inter', sans-serif;
+        }
+        .chat-container {
+            flex: 1;
+            overflow-y: auto;
+            scrollbar-width: thin;
+            scrollbar-color: #4a4a6a #2a2a3e;
+        }
+        .chat-container::-webkit-scrollbar {
+            width: 8px;
+        }
+        .chat-container::-webkit-scrollbar-track {
+            background: #2a2a3e;
+        }
+        .chat-container::-webkit-scrollbar-thumb {
+            background: #4a4a6a;
+            border-radius: 4px;
+        }
+        .markdown pre {
+            background: #2a2a3e;
+            padding: 1rem;
+            border-radius: 0.5rem;
+            overflow-x: auto;
+            color: #e0e0e0;
+            font-size: 0.875rem;
+            white-space: pre-wrap;
+        }
+        .gradient-button {
+            background: linear-gradient(90deg, #3b82f6, #8b5cf6);
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        .gradient-button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(59, 130, 246, 0.5);
+        }
+        .progress-bar {
+            height: 4px;
+            background: #4a4a6a;
+            border-radius: 2px;
+            overflow: hidden;
+        }
+        .progress-bar-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #3b82f6, #8b5cf6);
+            transition: width 0.3s ease;
+        }
+        .checkmark {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: #10b981;
+            text-align: center;
+            line-height: 20px;
+            animation: checkmark 0.3s ease-in-out;
+        }
+        @keyframes checkmark {
+            0% { transform: scale(0); }
+            100% { transform: scale(1); }
+        }
+        .file-badge {
+            background: linear-gradient(90deg, #3b82f6, #8b5cf6);
+            border-radius: 9999px;
+            padding: 0.25rem 0.75rem;
+            font-size: 0.75rem;
+            color: white;
+            margin: 0.125rem;
+            display: inline-flex;
+            align-items: center;
+            animation: fadeIn 0.3s ease-in-out;
+        }
+        @keyframes fadeIn {
+            0% { opacity: 0; transform: scale(0.8); }
+            100% { opacity: 1; transform: scale(1); }
+        }
+        .file-remove {
+            margin-left: 0.5rem;
+            cursor: pointer;
+            font-weight: bold;
+            opacity: 0.7;
+            transition: opacity 0.2s;
+        }
+        .file-remove:hover {
+            opacity: 1;
+        }
+        .error-message {
+            background: #f87171;
+            color: white;
+            padding: 0.5rem 1rem;
+            border-radius: 0.5rem;
+            font-size: 0.875rem;
+        }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+    <script type="text/babel">
+        function Chatbot() {
+            const [messages, setMessages] = React.useState([]);
+            const [inputText, setInputText] = React.useState('');
+            const [files, setFiles] = React.useState([]);
+            const [loading, setLoading] = React.useState(false);
+            const [error, setError] = React.useState(null);
+            const [uploadComplete, setUploadComplete] = React.useState(false);
+            const fileInputRef = React.useRef(null);
+            const chatContainerRef = React.useRef(null);
+
+            React.useEffect(() => {
+                if (chatContainerRef.current) {
+                    chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
+                }
+            }, [messages]);
+
+            const handleFileChange = (e) => {
+                const newFiles = Array.from(e.target.files);
+                const validFiles = newFiles.filter(file => {
+                    const ext = file.name.split('.').pop().toLowerCase();
+                    return ['docx', 'xlsx'].includes(ext);
+                });
+                if (validFiles.length < newFiles.length) {
+                    setError('Only .docx and .xlsx files are allowed.');
+                    setTimeout(() => setError(null), 8000);
+                }
+                setFiles(prev => [...prev, ...validFiles]);
+                setUploadComplete(false);
+            };
+
+            const removeFile = (indexToRemove) => {
+                setFiles(prev => prev.filter((_, index) => index !== indexToRemove));
+            };
+
+            const clearAllFiles = () => {
+                setFiles([]);
+                if (fileInputRef.current) {
+                    fileInputRef.current.value = null;
+                }
+            };
+
+            const handleSend = async () => {
+                if (!inputText.trim() && files.length === 0) {
+                    setError('Please enter a message or upload a file.');
+                    setTimeout(() => setError(null), 8000);
+                    return;
+                }
+                const userMessage = {
+                    text: inputText,
+                    files: files.map(f => f.name),
+                    isUser: true,
+                    timestamp: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Singapore' })
+                };
+                setMessages(prev => [...prev, userMessage]);
+                setLoading(true);
+                setError(null);
+
+                const formData = new FormData();
+                formData.append('text', inputText);
+                files.forEach(file => formData.append('files', file));
+
+                try {
+                    const response = await fetch('/chat', {
+                        method: 'POST',
+                        body: formData,
+                    });
+
+                    if (!response.ok) {
+                        const errorData = await response.json().catch(() => ({ response: `Server error: ${response.statusText}` }));
+                        throw new Error(errorData.response || 'Unknown server error');
+                    }
+
+                    const result = await response.json();
+                    console.log('Backend response:', result); // Debug log
+                    const botMessage = {
+                        text: result.response,
+                        type: result.type,
+                        progress: result.progress || [],
+                        pdf_filename: result.download_available ? result.pdf_filename : null,
+                        isUser: false,
+                        timestamp: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Singapore' })
+                    };
+                    setMessages(prev => [...prev, botMessage]);
+                    if (files.length > 0 && result.download_available) {
+                        setUploadComplete(true);
+                        setTimeout(() => setUploadComplete(false), 3000);
+                    }
+                } catch (error) {
+                    console.error('Fetch error:', error); // Debug log
+                    setMessages(prev => [...prev, {
+                        text: `Error: ${error.message}`,
+                        isUser: false,
+                        timestamp: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Singapore' })
+                    }]);
+                } finally {
+                    setLoading(false);
+                    setInputText('');
+                    clearAllFiles();
+                }
+            };
+
+            const handleDownloadMarkdown = (content, filename) => {
+                console.log('Downloading Markdown:', filename); // Debug log
+                const blob = new Blob([content], { type: 'text/markdown' });
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = filename || 'quarterly_business_report.md';
+                document.body.appendChild(a);
+                a.click();
+                window.URL.revokeObjectURL(url);
+                a.remove();
+            };
+
+            const handleDownloadPDF = async (filename) => {
+                console.log('Downloading PDF:', filename); // Debug log
+                try {
+                    const response = await fetch(`/download/${encodeURIComponent(filename)}`, {
+                        method: 'GET',
+                    });
+                    if (!response.ok) {
+                        const errorData = await response.json().catch(() => ({ error: `Failed to download: ${response.statusText}` }));
+                        throw new Error(errorData.error || 'Unknown error');
+                    }
+                    const blob = await response.blob();
+                    const url = window.URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = filename;
+                    document.body.appendChild(a);
+                    a.click();
+                    window.URL.revokeObjectURL(url);
+                    a.remove();
+                } catch (error) {
+                    console.error('PDF download error:', error); // Debug log
+                    setError(`Error downloading PDF: ${error.message}`);
+                    setTimeout(() => setError(null), 8000);
+                }
+            };
+
+            return (
+                <div className="h-screen flex flex-col max-w-6xl mx-auto border border-[#4a4a6a] bg-[#1a1a2e] rounded-xl shadow-lg">
+                    {/* Header */}
+                    <header className="p-4 bg-[#2a2a3e] text-white rounded-t-xl flex items-center justify-between shrink-0">
+                        <h1 className="text-xl font-bold">Business Report Chatbot</h1>
+                        <span className="text-sm text-gray-400">Q2 2025</span> {/* Updated to current quarter */}
+                    </header>
+
+                    {/* Chat Messages */}
+                    <main ref={chatContainerRef} className="chat-container p-4 sm:p-6 flex-1 min-h-0">
+                        {messages.map((msg, index) => (
+                            <div key={index} className={`mb-4 flex ${msg.isUser ? 'justify-end' : 'justify-start'}`}>
+                                <div className={`max-w-[90%] sm:max-w-[70%] p-4 rounded-lg ${msg.isUser ? 'bg-[#3b82f6]/20' : 'bg-[#2a2a3e]'} shadow-sm transition-all duration-200`}>
+                                    {msg.text && (
+                                        <div className={msg.type === 'markdown' ? 'markdown' : ''}>
+                                            {msg.type === 'markdown' ? (
+                                                <pre aria-label="Generated report">{msg.text}</pre>
+                                            ) : (
+                                                <p className="text-sm">{msg.text}</p>
+                                            )}
+                                        </div>
+                                    )}
+                                    {msg.files && msg.files.length > 0 && (
+                                        <p className="text-xs text-gray-400 mt-1">Uploaded: {msg.files.join(', ')}</p>
+                                    )}
+                                    {msg.progress && msg.progress.length > 0 && (
+                                        <ul className="text-xs text-gray-400 mt-2" aria-label="Processing steps">
+                                            {msg.progress.map((step, i) => (
+                                                <li key={i}>• {step}</li>
+                                            ))}
+                                        </ul>
+                                    )}
+                                    {msg.type === 'markdown' && (
+                                        <div className="mt-2 flex gap-2">
+                                            <button
+                                                onClick={() => handleDownloadMarkdown(msg.text, 'quarterly_business_report.md')}
+                                                className="text-xs text-[#8b5cf6] hover:underline focus:outline-none focus:ring-2 focus:ring-[#8b5cf6] rounded"
+                                                aria-label="Download report as markdown"
+                                            >
+                                                Download Markdown
+                                            </button>
+                                            {msg.pdf_filename && (
+                                                <button
+                                                    onClick={() => handleDownloadPDF(msg.pdf_filename)}
+                                                    className="text-xs text-[#3b82f6] hover:underline focus:outline-none focus:ring-2 focus:ring-[#3b82f6] rounded"
+                                                    aria-label="Download report as PDF"
+                                                >
+                                                    Download PDF
+                                                </button>
+                                            )}
+                                        </div>
+                                    )}
+                                    <p className="text-xs text-gray-500 mt-1">{msg.timestamp}</p>
+                                </div>
+                            </div>
+                        ))}
+                        {error && (
+                            <div className="flex justify-center mb-4">
+                                <div className="error-message max-w-[90%] sm:max-w-[70%]">
+                                    {error}
+                                </div>
+                            </div>
+                        )}
+                        {loading && (
+                            <div className="flex justify-start items-center gap-2 mb-4">
+                                <div className="animate-spin rounded-full h-5 w-5 border-t-2 border-b-2 border-gray-400"></div>
+                                <div className="bg-[#2a2a3e] p-4 rounded-lg text-sm text-gray-400">
+                                    Processing...
+                                </div>
+                            </div>
+                        )}
+                        {uploadComplete && (
+                            <div className="flex justify-start mb-4">
+                                <div className="bg-[#2a2a3e] p-4 rounded-lg flex items-center">
+                                    <span className="checkmark mr-2">✔</span>
+                                    <p className="text-sm text-gray-400">Files uploaded successfully!</p>
+                                </div>
+                            </div>
+                        )}
+                    </main>
+
+                    {/* File Upload Preview */}
+                    {files.length > 0 && (
+                        <section className="px-4 py-2 bg-[#2a2a3e] border-t border-[#4a4a6a] shrink-0">
+                            <div className="flex items-center justify-between mb-2">
+                                <span className="text-sm text-gray-400">Selected files:</span>
+                                <button
+                                    onClick={clearAllFiles}
+                                    className="text-xs text-red-400 hover:text-red-300 focus:outline-none focus:ring-2 focus:ring-red-400 rounded"
+                                    aria-label="Clear all files"
+                                >
+                                    Clear all
+                                </button>
+                            </div>
+                            <div className="flex flex-wrap gap-2">
+                                {files.map((file, index) => (
+                                    <div key={index} className="file-badge">
+                                        <span>{file.name}</span>
+                                        <span
+                                            className="file-remove"
+                                            onClick={() => removeFile(index)}
+                                            role="button"
+                                            aria-label={`Remove ${file.name}`}
+                                        >
+                                            ×
+                                        </span>
+                                    </div>
+                                ))}
+                            </div>
+                        </section>
+                    )}
+
+                    {/* Input Area */}
+                    <footer className="p-4 border-t border-[#4a4a6a] flex items-center bg-[#2a2a3e] shrink-0">
+                        <input
+                            type="file"
+                            multiple
+                            accept=".docx,.xlsx"
+                            onChange={handleFileChange}
+                            ref={fileInputRef}
+                            className="hidden"
+                            id="file-upload"
+                            aria-label="Upload documents"
+                        />
+                        <label
+                            htmlFor="file-upload"
+                            className="cursor-pointer mr-3 text-gray-400 hover:text-gray-200 transition-colors focus:outline-none focus:ring-2 focus:ring-[#8b5cf6] rounded"
+                            title="Upload .docx or .xlsx files"
+                            role="button"
+                            aria-label="Upload files"
+                        >
+                            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 3"></path>
+                            </svg>
+                        </label>
+                        <input
+                            type="text"
+                            value={inputText}
+                            onChange={e => setInputText(e.target.value)}
+                            onKeyPress={e => e.key === 'Enter' && handleSend()}
+                            placeholder="Ask a question or say 'generate report'..."
+                            className="flex-1 p-3 bg-[#3a3a4e] text-white border border-[#4a4a6a] rounded-lg focus:outline-none focus:ring-2 focus:ring-[#8b5cf6]"
+                            aria-label="Chat input"
+                        />
+                        <button
+                            onClick={handleSend}
+                            disabled={loading}
+                            className="ml-3 px-4 py-2 text-white gradient-button rounded-lg disabled:bg-gray-600 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-[#8b5cf6]"
+                            aria-label="Send message"
+                        >
+                            Send
+                        </button>
+                    </footer>
+                </div>
+            );
+        }
+
+        ReactDOM.createRoot(document.getElementById('root')).render(<Chatbot />);
+    </script>
+</body>
+</html>
