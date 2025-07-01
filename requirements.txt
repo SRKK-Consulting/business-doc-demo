@@ -12,3 +12,5 @@ docx2txt
 faiss-cpu
 markdown-pdf
 reportlab
+openpyxl
+python-docx

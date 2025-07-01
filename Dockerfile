@@ -4,6 +4,7 @@ FROM python:3.11-slim
 # Set the working directory inside the container
 WORKDIR /app
 
+    
 # Copy the requirements file into the container
 COPY requirements.txt .
 
@@ -17,4 +18,4 @@ COPY . .
 EXPOSE 5000
 
 # Command to run the Flask app with Gunicorn
-CMD ["gunicorn", "--bind", "0.0.0.0:5000", "final:app"]
+CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--timeout", "1200", "final:app"]

@@ -7,20 +7,18 @@ from werkzeug.utils import secure_filename
 from langchain_community.document_loaders import Docx2txtLoader
 from langchain_excel_loader import StructuredExcelLoader
 from langchain_openai import AzureOpenAIEmbeddings, AzureChatOpenAI
-from langchain.vectorstores import FAISS
+from langchain_community.vectorstores import FAISS
 from langchain.text_splitter import CharacterTextSplitter
 from langchain.chains import RetrievalQA
 from langchain.prompts import PromptTemplate
 from langgraph.graph import StateGraph, END
 from azure.storage.blob import BlobServiceClient
 import tempfile
-import uuid
 from reportlab.lib.pagesizes import letter, A4
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import inch
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak
 from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_JUSTIFY
-import markdown
 import re
 from html import unescape
 
@@ -46,7 +44,7 @@ BLOB_SERVICE_URL = f"https://{BLOB_ACCOUNT_NAME}.blob.core.windows.net?{BLOB_SAS
 # Allowed file extensions
 ALLOWED_EXTENSIONS = {'docx', 'xlsx'}
 
-# Define state for LangGraph
+# Define state for LangGraph - Added report_path field
 class ReportState(TypedDict):
     user_input: str
     uploaded_files: List[str]
@@ -59,6 +57,7 @@ class ReportState(TypedDict):
     extracted_sections: Dict[str, str]
     progress: List[str]
     response: str
+    report_path: str  # Added this field
 
 # Initialize Azure OpenAI embeddings and LLM
 embeddings = AzureOpenAIEmbeddings(
@@ -557,6 +556,7 @@ def load_documents(state: ReportState) -> Dict:
         raise
 
 def extract_insights(state: ReportState) -> Dict:
+    logger.info("Entering extract_insights")
     try:
         state['progress'].append("Extracting insights from documents...")
         extracted_sections = {}
@@ -567,23 +567,30 @@ def extract_insights(state: ReportState) -> Dict:
             ("operations", state["operations_docs"]),
             ("hr", state["hr_docs"])
         ]:
+            logger.info(f"Processing {doc_type} with {len(docs)} documents")
             if not docs:
+                logger.warning(f"No documents for {doc_type}")
                 extracted_sections[doc_type] = f"[Placeholder: No {doc_type} data available]"
                 state['progress'].append(f"No documents for {doc_type}")
                 continue
+            logger.info(f"Creating FAISS vector store for {doc_type}")
             vector_store = FAISS.from_documents(docs, embeddings)
+            logger.info(f"Setting up RetrievalQA chain for {doc_type}")
             qa_chain = RetrievalQA.from_chain_type(
                 llm=llm,
                 chain_type="stuff",
-                retriever=vector_store.as_retriever(search_kwargs={"k": len(docs)}),
+                retriever=vector_store.as_retriever(search_kwargs={"k": min(len(docs), 2)}),
                 chain_type_kwargs={"prompt": prompt_templates[doc_type]}
             )
+            logger.info(f"Invoking QA chain for {doc_type}")
             result = qa_chain.invoke({"query": f"List out in detail {doc_type} and gather insights"})
+            logger.info(f"QA chain completed for {doc_type}")
             extracted_sections[doc_type] = result["result"]
             state['progress'].append(f"Extracted insights for {doc_type}")
+        logger.info("Exiting extract_insights successfully")
         return {"extracted_sections": extracted_sections, "progress": state['progress']}
     except Exception as e:
-        logger.error(f"Error extracting insights: {str(e)}")
+        logger.error(f"Error in extract_insights: {str(e)}", exc_info=True)
         state['progress'].append(f"Error extracting insights: {str(e)}")
         raise
 
@@ -611,8 +618,7 @@ def generate_markdown_report(state: ReportState) -> Dict:
 
         state['progress'].append("Converting markdown to PDF...")
         
-        # Create temporary file for PDF with timestamp to make it unique
-        timestamp = int(uuid.uuid4().time_low)  # Use part of UUID for uniqueness
+        # Create PDF filename
         pdf_filename = f"quarterly_business_report.pdf"
         
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_pdf_file:
@@ -640,7 +646,7 @@ def generate_markdown_report(state: ReportState) -> Dict:
 
         return {
             "extracted_sections": extracted_sections,
-            "report_path": pdf_filename,
+            "report_path": pdf_filename,  # This will now be properly included in the state
             "response": markdown_content,
             "progress": state['progress']
         }
@@ -680,12 +686,13 @@ def index():
     return send_file('static/index.html')
 
 @app.route('/chat', methods=['POST'])
-
 def chat():
     try:
+        logger.info("Received /chat request")
         data = request.form
         text = data.get('text', '')
         files = request.files.getlist('files')
+        logger.info(f"Text: {text}, Files: {[f.filename for f in files]}")
         uploaded_files = []
 
         # Handle file uploads
@@ -693,13 +700,14 @@ def chat():
             for file in files:
                 if file and allowed_file(file.filename):
                     filename = secure_filename(file.filename)
-                    new_filename = f"{uuid.uuid4()}_{filename}"
+                    new_filename = filename
+                    logger.info(f"Uploading file: {filename}")
                     if upload_to_blob(file, new_filename):
                         uploaded_files.append(new_filename)
             if not uploaded_files and files:
                 return jsonify({"response": "No valid files uploaded.", "type": "text", "download_available": False}), 400
 
-        # Initialize state. Update with report path
+        # Initialize state
         initial_state = ReportState(
             user_input=text,
             uploaded_files=uploaded_files,
@@ -711,23 +719,30 @@ def chat():
             hr_docs=[],
             extracted_sections={},
             progress=[],
-            response=""
+            response="",
+            report_path=""  # Initialize report_path
         )
 
         # Run workflow
+        logger.info("Running workflow")
         result = app_workflow.invoke(initial_state)
         response_type = "markdown" if result["intent"] == "generate_report" else "text"
+        logger.info(f"Workflow result: {result}")
+        
+        # Check if it's a report generation and we have a report path
+        download_available = result["intent"] == "generate_report" and bool(result.get("report_path"))
         
         # Prepare response data
         response_data = {
             "response": result["response"],
             "type": response_type,
             "progress": result["progress"],
-            "download_available": result.get("download_available", False),  # Explicitly use download_available
-            "pdf_filename": result.get("report_path") if result.get("download_available", False) else None
+            "download_available": download_available,
+            "pdf_filename": result.get("report_path") if download_available else None
         }
         
-        logging.info(result)
+        logger.info(f"Download available: {download_available}")
+        logger.info(f"PDF filename: {result.get('report_path')}")
         return jsonify(response_data)
     except Exception as e:
         logger.error(f"Error in chat: {str(e)}")
